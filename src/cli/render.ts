@@ -2,6 +2,7 @@
  * Human-readable renderers for CLI output. JSON mode bypasses these.
  */
 import { CellInspection } from '../core/WorkbookGraph';
+import { CollectionOverview } from '../core/Collection';
 import { ContextPacket, RegionSummary, TraceNode, WorkbookOverview } from '../core/types';
 
 const indent = (text: string, pad: string): string =>
@@ -109,7 +110,8 @@ export function renderTrace(node: TraceNode): string {
 
 export function renderRegionSummary(s: RegionSummary, ordinal?: number): string {
   const lines: string[] = [];
-  const head = `${ordinal !== undefined ? `${ordinal}. ` : ''}[${s.regionId}] ${s.kind} ${s.rangeA1}  (mode ${s.mode}, ~${s.tokens} tokens${s.truncated ? ', TRUNCATED' : ''})`;
+  const where = s.workbook ? `[${s.workbook}]${s.rangeA1}` : s.rangeA1;
+  const head = `${ordinal !== undefined ? `${ordinal}. ` : ''}[${s.regionId}] ${s.kind} ${where}  (mode ${s.mode}, ~${s.tokens} tokens${s.truncated ? ', TRUNCATED' : ''})`;
   lines.push(head);
   lines.push(indent(s.text, '   '));
   if (s.data !== undefined) {
@@ -160,6 +162,58 @@ export function renderPacket(p: ContextPacket): string {
     lines.push('');
     lines.push('Warnings:');
     for (const w of p.warnings) lines.push(`  ! ${w}`);
+  }
+  return lines.join('\n');
+}
+
+export function renderCollectionLinks(o: CollectionOverview): string {
+  const lines: string[] = [];
+  lines.push(`Cross-workbook formula links (${o.formulaLinks.length}):`);
+  if (o.formulaLinks.length === 0) lines.push('  (none)');
+  for (const l of o.formulaLinks) {
+    const target = l.toBook ?? `${l.external}  ⚠ NOT LOADED`;
+    lines.push(`  ${l.fromBook} → ${target}   ${l.refCount} ref(s)`);
+    lines.push(`      from: ${l.cells.join(', ')}`);
+    if (l.targets.length > 0) lines.push(`      into: ${l.targets.join(', ')}`);
+  }
+  if (o.sharedNames.length > 0) {
+    lines.push(`Shared defined names (${o.sharedNames.length}):`);
+    for (const sn of o.sharedNames) {
+      lines.push(`  ${sn.name}: ${sn.books.map((b) => `${b.book} (${b.ranges.join(', ')})`).join(' · ')}`);
+    }
+  }
+  if (o.dataLinks.length > 0) {
+    lines.push(`Data links — regions sharing key values (${o.dataLinks.length}):`);
+    for (const dl of o.dataLinks.slice(0, 10)) {
+      lines.push(
+        `  [${dl.a.book}]${dl.a.rangeA1} (${dl.a.column}) ⋈ [${dl.b.book}]${dl.b.rangeA1} (${dl.b.column}) — ${dl.shared} shared, e.g. ${dl.sample.join(', ')}`
+      );
+    }
+  }
+  if (o.unresolved.length > 0) {
+    lines.push('Unresolved external workbooks:');
+    for (const u of o.unresolved) {
+      lines.push(`  ! "${u.external}" — ${u.refCount} ref(s) from ${u.fromBooks.join(', ')} (e.g. ${u.sampleCells.join(', ')})`);
+    }
+  }
+  return lines.join('\n');
+}
+
+export function renderCollectionOverview(o: CollectionOverview): string {
+  const lines: string[] = [];
+  lines.push(`Workbooks (${o.workbooks.length}):`);
+  for (const w of o.workbooks) {
+    const hidden = w.hiddenSheets > 0 ? ` (${w.hiddenSheets} hidden)` : '';
+    lines.push(
+      `  ${w.key.padEnd(22)} ${w.sheets} sheet${w.sheets === 1 ? '' : 's'}${hidden}  ${String(w.cells).padStart(6)} cells  ${String(
+        w.formulaCells
+      ).padStart(4)} formulas  ${w.regions} region${w.regions === 1 ? '' : 's'}`
+    );
+  }
+  lines.push(renderCollectionLinks(o));
+  if (o.warnings.length > 0) {
+    lines.push('Warnings:');
+    for (const w of o.warnings.slice(0, 8)) lines.push(`  ! ${w}`);
   }
   return lines.join('\n');
 }

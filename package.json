@@ -1,6 +1,6 @@
 {
   "name": "pharos-sheets",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Turn Excel workbooks into navigable graphs: region detection, formula tracing, context diffusion and token-budgeted summaries for AI agents and analysts.",
   "keywords": [
     "excel",

@@ -3,7 +3,21 @@
  * https://github.com/…/pharos
  */
 export { WorkbookGraph } from './core/WorkbookGraph';
-export type { CellInspection, DefinedName, FindHit, LoadOptions } from './core/WorkbookGraph';
+export type { CellInspection, DefinedName, FindHit, LoadOptions, TraceHooks } from './core/WorkbookGraph';
+export { Collection } from './core/Collection';
+export type {
+  CollectionInput,
+  CollectionOverview,
+  CollectionContextPacket,
+  CollectionWorkbookInfo,
+  CrossLink,
+  DataLink,
+  DataLinkEnd,
+  FormulaLinkGroup,
+  QualifiedRef,
+  SharedName,
+  UnresolvedExternal
+} from './core/Collection';
 export { CellNode } from './core/CellNode';
 export { Region } from './core/Region';
 export * from './core/types';

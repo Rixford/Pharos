@@ -13,9 +13,12 @@
  */
 import { Command, InvalidArgumentError } from 'commander';
 import * as fs from 'fs';
+import { Collection } from '../core/Collection';
 import { WorkbookGraph } from '../core/WorkbookGraph';
 import { GRANULARITY_MODES, GranularityMode } from '../core/types';
 import {
+  renderCollectionLinks,
+  renderCollectionOverview,
   renderInspection,
   renderOverview,
   renderPacket,
@@ -225,6 +228,98 @@ program
       })
   );
 
+program
+  .command('collection')
+  .description('multi-workbook graph: link overview, cross-workbook traces and context')
+  .argument('<files...>', 'two or more .xlsx files (first is the default for unqualified addresses)')
+  .option('--links', 'list cross-workbook links (formula refs, shared names, data links)')
+  .option('--inspect <address>', 'inspect a cell, e.g. "[book.xlsx]Sheet!A1"')
+  .option('--context <address>', 'cross-workbook context packet from a seed cell')
+  .option('--precedents <address>', 'precedent trace that follows external refs into loaded workbooks')
+  .option('--dependents <address>', 'dependent trace across workbooks')
+  .option('--find <query>', 'search values across every workbook')
+  .option('-d, --depth <n>', 'trace/diffusion depth', parseIntOption, 3)
+  .option('-m, --mode <mode>', `granularity: ${GRANULARITY_MODES.join('|')}`, parseMode, 'compact')
+  .option('-b, --budget <tokens>', 'token budget', parseIntOption, 2500)
+  .option('--json', 'output JSON')
+  .action(
+    (
+      files: string[],
+      opts: {
+        links?: boolean;
+        inspect?: string;
+        context?: string;
+        precedents?: string;
+        dependents?: string;
+        find?: string;
+        depth: number;
+        mode: GranularityMode;
+        budget: number;
+        json?: boolean;
+      }
+    ) =>
+      run(async () => {
+        for (const f of files) {
+          if (!fs.existsSync(f)) throw new Error(`file not found: ${f}`);
+        }
+        const collection = await Collection.load(files);
+        if (opts.inspect) {
+          const inspection = collection.inspect(opts.inspect);
+          emit(!!opts.json, inspection, () => {
+            let text = renderInspection(inspection);
+            if (inspection.crossDependents.length > 0) {
+              text += `\n  cross-workbook dependents: ${inspection.crossDependents.join(', ')}`;
+            }
+            return text;
+          });
+          return;
+        }
+        if (opts.context) {
+          const packet = collection.expandContext(opts.context, {
+            depth: opts.depth,
+            mode: opts.mode,
+            tokenBudget: opts.budget
+          });
+          emit(!!opts.json, packet, () => renderPacket(packet));
+          return;
+        }
+        if (opts.precedents) {
+          const tree = collection.tracePrecedents(opts.precedents, opts.depth);
+          emit(!!opts.json, tree, () => renderTrace(tree));
+          return;
+        }
+        if (opts.dependents) {
+          const tree = collection.traceDependents(opts.dependents, opts.depth);
+          emit(!!opts.json, tree, () => renderTrace(tree));
+          return;
+        }
+        if (opts.find) {
+          const hits = collection.findValue(opts.find);
+          emit(!!opts.json, hits, () =>
+            hits.length === 0
+              ? 'no matches'
+              : hits.map((h) => `${h.address}  ${String(h.value)}  [${h.type}]`).join('\n')
+          );
+          return;
+        }
+        const overview = collection.overview();
+        if (opts.links) {
+          emit(
+            !!opts.json,
+            {
+              formulaLinks: overview.formulaLinks,
+              sharedNames: overview.sharedNames,
+              dataLinks: overview.dataLinks,
+              unresolved: overview.unresolved
+            },
+            () => renderCollectionLinks(overview)
+          );
+          return;
+        }
+        emit(!!opts.json, overview, () => renderCollectionOverview(overview));
+      })
+  );
+
 program.addHelpText(
   'after',
   `
@@ -236,7 +331,14 @@ Examples:
   pharos context report.xlsx 'Summary!C2' --depth 2 --mode evidence --budget 1500
   pharos precedents report.xlsx 'Summary!C3' --depth 4
   pharos dependents report.xlsx 'Sales!F35'
-  pharos find report.xlsx 24118.2`
+  pharos find report.xlsx 24118.2
+
+Collections (multi-workbook):
+  pharos collection summary.xlsx sales.xlsx targets.xlsx
+  pharos collection summary.xlsx sales.xlsx --links
+  pharos collection summary.xlsx sales.xlsx --context '[summary.xlsx]Dash!C2'
+  pharos collection summary.xlsx sales.xlsx --precedents '[summary.xlsx]Dash!C5' --depth 4
+  pharos collection summary.xlsx sales.xlsx --dependents '[sales.xlsx]Sales!D15'`
 );
 
 program.parseAsync(process.argv);

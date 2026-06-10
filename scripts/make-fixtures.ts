@@ -103,6 +103,92 @@ async function main(): Promise<void> {
   const outPath = path.join(outDir, 'sample.xlsx');
   await wb.xlsx.writeFile(outPath);
   console.log(`fixture written: ${outPath} (total revenue ${totalRevenue})`);
+
+  await makeCollectionFixtures();
+}
+
+/**
+ * Collection fixtures: three linked workbooks under test/fixtures/collection/.
+ *
+ *   sales-2026.xlsx    Sales!A1:D15 table (Region|Product|Units|Revenue,
+ *                      Revenue computed =C{r}*7.5), totals row 15 with
+ *                      D15 =SUM(D2:D13) named GrandTotal
+ *   targets.xlsx       Targets!A1:B7 table (Region|Target), totals row 7
+ *                      with B7 =SUM(B2:B5) also named GrandTotal
+ *   summary-2026.xlsx  Dash!B2:C5 key/value block referencing both books,
+ *                      plus one reference to budget-2026.xlsx which is
+ *                      deliberately NOT generated (unresolved-external case)
+ */
+async function makeCollectionFixtures(): Promise<void> {
+  const outDir = path.join(__dirname, '..', 'test', 'fixtures', 'collection');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // ── sales-2026.xlsx ──────────────────────────────────────────────────────
+  const salesWb = new ExcelJS.Workbook();
+  const sales = salesWb.addWorksheet('Sales');
+  ['Region', 'Product', 'Units', 'Revenue'].forEach((h, i) => {
+    const cell = sales.getCell(1, i + 1);
+    cell.value = h;
+    cell.font = { bold: true };
+  });
+  let salesTotal = 0;
+  for (let i = 0; i < 12; i++) {
+    const row = 2 + i;
+    const units = i * 3 + 4;
+    const revenue = Math.round(units * 7.5 * 100) / 100;
+    salesTotal += revenue;
+    sales.getCell(row, 1).value = REGIONS[i % 4];
+    sales.getCell(row, 2).value = PRODUCTS[i % 3];
+    sales.getCell(row, 3).value = units;
+    sales.getCell(row, 4).value = { formula: `C${row}*7.5`, result: revenue };
+  }
+  salesTotal = Math.round(salesTotal * 100) / 100;
+  const salesLabel = sales.getCell('A15');
+  salesLabel.value = 'Total';
+  salesLabel.font = { bold: true };
+  sales.getCell('D15').value = { formula: 'SUM(D2:D13)', result: salesTotal };
+  sales.getCell('D15').name = 'GrandTotal';
+  await salesWb.xlsx.writeFile(path.join(outDir, 'sales-2026.xlsx'));
+
+  // ── targets.xlsx ─────────────────────────────────────────────────────────
+  const targetsWb = new ExcelJS.Workbook();
+  const targets = targetsWb.addWorksheet('Targets');
+  ['Region', 'Target'].forEach((h, i) => {
+    const cell = targets.getCell(1, i + 1);
+    cell.value = h;
+    cell.font = { bold: true };
+  });
+  let targetsTotal = 0;
+  REGIONS.forEach((r, i) => {
+    const value = 500 + i * 150;
+    targetsTotal += value;
+    targets.getCell(2 + i, 1).value = r;
+    targets.getCell(2 + i, 2).value = value;
+  });
+  const targetsLabel = targets.getCell('A7');
+  targetsLabel.value = 'Total';
+  targetsLabel.font = { bold: true };
+  targets.getCell('B7').value = { formula: 'SUM(B2:B5)', result: targetsTotal };
+  targets.getCell('B7').name = 'GrandTotal';
+  await targetsWb.xlsx.writeFile(path.join(outDir, 'targets.xlsx'));
+
+  // ── summary-2026.xlsx ────────────────────────────────────────────────────
+  const summaryWb = new ExcelJS.Workbook();
+  const dash = summaryWb.addWorksheet('Dash');
+  dash.getCell('B2').value = 'Total Sales';
+  dash.getCell('C2').value = { formula: "'[sales-2026.xlsx]Sales'!D15", result: salesTotal };
+  dash.getCell('B3').value = 'North Target';
+  dash.getCell('C3').value = {
+    formula: 'VLOOKUP("North",\'[targets.xlsx]Targets\'!A2:B5,2,FALSE)',
+    result: 500
+  };
+  dash.getCell('B4').value = 'vs Budget';
+  dash.getCell('C4').value = { formula: "C2-'[budget-2026.xlsx]FY'!B2", result: 0 };
+  dash.getCell('B5').value = 'Commission';
+  dash.getCell('C5').value = { formula: 'C2*0.1', result: Math.round(salesTotal * 10) / 100 };
+  await summaryWb.xlsx.writeFile(path.join(outDir, 'summary-2026.xlsx'));
+
+  console.log(`collection fixtures written: ${outDir} (sales total ${salesTotal})`);
 }
 
 main().catch((err) => {

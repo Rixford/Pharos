@@ -178,6 +178,8 @@ export interface RegionData {
 
 export interface RegionSummary {
   regionId: string;
+  /** Workbook key when this summary was produced through a Collection. */
+  workbook?: string;
   sheet: string;
   rangeA1: string;
   kind: RegionKind;

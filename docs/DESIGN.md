@@ -183,6 +183,40 @@ Not yet addressed: streaming parses (ExcelJS holds the workbook in
 memory), worker-thread parallelism. Both are roadmap items; medium
 workbooks (10⁴–10⁵ cells) load in well under a second of analysis time.
 
+## Collections (multi-workbook)
+
+`Collection` (v0.2) composes multiple WorkbookGraphs without modifying
+them. External references already extracted by the FormulaParser
+(`'[Book.xlsx]Sheet'!A1` → external + sheet + range) are resolved by
+matching the written workbook name against loaded workbook keys
+(basename, case-insensitive, extension-tolerant). On that mapping:
+
+* a **cross-link index** (referencing cell → target book/range) powers
+  `crossDependentsOf`, the link overview and unresolved-external
+  reporting — the same interval-containment approach as the in-book
+  dependent index;
+* **precedent traces** reuse the single-workbook engine through
+  `TraceHooks`: three optional callbacks (address qualifier, cycle-stack
+  key prefix, external resolver) threaded through `tracePrecedents`. The
+  resolver hops into the target graph via `traceRange` *with the same
+  stack*, so cross-book reference cycles terminate exactly like local
+  ones. No hooks ⇒ behavior is bit-identical to v0.1;
+* **dependent traces** and **diffusion** are composed at collection level
+  from public graph methods (`dependentsOf`, `expandContext`,
+  `summariseRegion`); the seed's book gets ~65% of the token budget and
+  cross-book regions (capped at compact granularity) fill the rest;
+* **data links** find lookup-style relationships from the data itself:
+  key/category columns (key columns, or string columns with 2–1000
+  distinct values) are compared pairwise across books; ≥50% overlap of
+  the smaller side and ≥2 shared values yields a DataLink with coverage
+  both ways — the classic fact↔dimension signal;
+* **shared defined names** across books become semantic edges.
+
+Limitations: numeric external references (`[1]Sheet1!A1`) index the
+workbook's external-link table, which Pharos does not parse yet — they
+stay stub nodes. Matching is by file name; two files sharing a basename
+cannot both be addressed (the second `add` throws).
+
 ## Future directions
 
 * **Parsers**: CSV (trivial adapter), Google Sheets (API-backed), SheetJS.

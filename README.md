@@ -38,6 +38,8 @@ pharos context report.xlsx 'Summary!C2' --depth 2 --budget 1500
 pharos precedents report.xlsx 'Summary!C3' --depth 4
 pharos dependents report.xlsx 'Sales!F35'
 pharos find report.xlsx "North" --sheet Sales
+
+pharos collection summary.xlsx sales.xlsx targets.xlsx   # multi-workbook link graph
 ```
 
 Every command accepts `--json` for machine-readable output. A `context` run looks like:
@@ -113,6 +115,57 @@ const packet = graph.expandContext('Summary!C2', {
 
 Full signatures: [docs/API.md](docs/API.md). TypeScript definitions ship with the package.
 
+## Collections — multi-workbook graphs
+
+Workbooks rarely live alone: dashboards pull from data books, models read rate sheets. A **Collection** loads several workbooks as one graph and resolves the `'[Book.xlsx]Sheet'!A1` references that single-workbook mode can only report as stubs.
+
+```bash
+pharos collection summary.xlsx sales.xlsx targets.xlsx                  # link overview
+pharos collection summary.xlsx sales.xlsx targets.xlsx --links --json   # machine-readable link graph
+pharos collection summary.xlsx sales.xlsx --precedents '[summary.xlsx]Dash!C5' --depth 4
+pharos collection summary.xlsx sales.xlsx --context '[summary.xlsx]Dash!C2'
+```
+
+A cross-workbook precedent trace keeps going where v0.1 had to stop:
+
+```text
+[summary-2026.xlsx]Dash!C5 = 184.5  =C2*0.1
+└─ [summary-2026.xlsx]Dash!C2 = 1845  ='[sales-2026.xlsx]Sales'!D15
+   └─ [sales-2026.xlsx]Sales!D15 = 1845  =SUM(D2:D13)
+      └─ [sales-2026.xlsx]Sales!D2:D13 (12 cells) — dominant pattern =C2*7.5 (12×)
+```
+
+And the overview maps the whole link graph — including workbooks that are referenced but *missing*:
+
+```text
+Cross-workbook formula links (3):
+  summary-2026.xlsx → sales-2026.xlsx   1 ref(s)    from: [summary-2026.xlsx]Dash!C2   into: Sales!D15
+  summary-2026.xlsx → targets.xlsx      1 ref(s)    from: [summary-2026.xlsx]Dash!C3   into: Targets!A2:B5
+  summary-2026.xlsx → budget-2026.xlsx  ⚠ NOT LOADED
+Shared defined names (1):  GrandTotal: sales-2026.xlsx (Sales!$D$15) · targets.xlsx (Targets!$B$7)
+Data links (1):  [sales-2026.xlsx]Sales!A1:D15 (Region) ⋈ [targets.xlsx]Targets!A1:B7 (Region) — 4 shared
+```
+
+```ts
+import { Collection } from 'pharos-sheets';
+
+const c = await Collection.load(['summary.xlsx', 'sales.xlsx', 'targets.xlsx']);
+
+c.overview();                                   // workbooks, links, shared names, data links, unresolved externals
+c.crossDependentsOf('[sales.xlsx]Sales!D15');   // → ['[summary.xlsx]Dash!C2']
+c.tracePrecedents('[summary.xlsx]Dash!C5', 4);  // follows external refs INTO loaded workbooks
+c.traceDependents('[sales.xlsx]Sales!D15');     // who reads this cell, anywhere in the collection
+c.dataLinks();                                  // lookup-style key overlap between regions across books
+c.sharedNames();                                // defined names appearing in 2+ workbooks
+
+const packet = c.expandContext('[summary.xlsx]Dash!C2', { tokenBudget: 2500 });
+// packet.regions[i].workbook  → which book each region came from
+// packet.crossLinks           → formula links touching the seed
+// packet.nextActions          → e.g. `Load "budget-2026.xlsx" into the collection to resolve …`
+```
+
+Addresses qualify with the workbook in brackets (`[Book.xlsx]Sheet!A1`); unqualified addresses use the first loaded workbook. The single-workbook API is unchanged — a Collection is pure composition over `WorkbookGraph`s.
+
 ## Concepts
 
 **Graph.** Cells, regions, sheets and the workbook are nodes. Edges come in five families: **spatial** (adjacency), **structural** (cell ∈ region ∈ sheet), **formula** (precedents/dependents, including through ranges and named ranges), **semantic** (shared headers, shared defined names) and **sheet** (same-sheet co-location).
@@ -157,11 +210,11 @@ Designed for medium workbooks (10,000+ cells): single-pass parsing, lazy + cache
 
 ## Known limitations
 
-R1C1 formulas are not resolved; structured references (`Table1[Col]`) and 3-D references (`Sheet1:Sheet3!A1`) are recorded with warnings rather than fully expanded; external workbook values are never loaded (referenced workbooks are surfaced in `overview()` and warnings). Multi-row headers are treated as single-row.
+R1C1 formulas are not resolved; structured references (`Table1[Col]`) and 3-D references (`Sheet1:Sheet3!A1`) are recorded with warnings rather than fully expanded. In single-workbook mode external workbook values are never loaded — load the files together as a Collection to resolve them; numeric link-table references (`[1]Sheet1!A1`) and same-basename collisions remain unresolved either way. Multi-row headers are treated as single-row.
 
 ## Roadmap
 
-CSV and Google Sheets parser adapters (the `WorkbookParser` interface is already pluggable) · vector-store indexing for semantic cell search · custom summariser plugins for domain tables (financial statements, schedules) · workbook `diff` · streaming mode for very large files.
+CSV and Google Sheets parser adapters (the `WorkbookParser` interface is already pluggable) · parsing the xlsx external-link table to resolve numeric `[1]` references · vector-store indexing for semantic cell search · custom summariser plugins for domain tables (financial statements, schedules) · workbook `diff` · streaming mode for very large files.
 
 ## Contributing & license
 

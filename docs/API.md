@@ -108,6 +108,75 @@ names, external workbook references, totals, warnings. This is what
 
 ---
 
+## class `Collection`
+
+Multi-workbook layer (v0.2). Addresses are qualified `[Book.xlsx]Sheet!A1`;
+unqualified addresses resolve against the first loaded workbook. Workbook
+names are case-insensitive and default to file basenames.
+
+### `static load(inputs, options?): Promise<Collection>`
+
+`inputs: Array<string | { name?: string; input: string | Buffer }>` —
+Buffers need an explicit `name`. `options` are the same `LoadOptions` as
+`WorkbookGraph.load`.
+
+### `add(name, graph)` · `workbooks()` · `graph(book)` · `defaultWorkbook`
+
+A Collection is pure composition over ordinary `WorkbookGraph`s; `add`
+lets you build one from graphs you already loaded.
+
+### `overview(): CollectionOverview`
+
+Per-workbook stats, grouped formula links (resolved and unresolved),
+shared defined names, data links and warnings. This is what
+`pharos collection <files...>` prints.
+
+### `links(): CrossLink[]` · `crossDependentsOf(address): string[]`
+
+Every formula-level cross-workbook reference; and the cells in *other*
+workbooks whose formulas read a given cell (range- and named-range-aware).
+
+### `tracePrecedents(address, depth = 2)` · `traceDependents(address, depth = 2)`
+
+Like the `WorkbookGraph` methods, but external references continue into
+loaded workbooks and dependents cross workbook boundaries. All node
+addresses come back qualified; cycle detection spans workbooks; externals
+that are *not* loaded remain explicit stub nodes.
+
+### `expandContext(address, options?): CollectionContextPacket`
+
+Runs single-workbook diffusion for the seed's book (~65% of the token
+budget), then adds regions from other workbooks reached via formula
+edges, cross-dependents, shared defined names and data links. The packet
+gains `workbooks`, `crossLinks`, a `workbook` field on every region
+summary, and next actions such as `Load "budget-2026.xlsx" into the
+collection to resolve …`.
+
+### `dataLinks(opts?): DataLink[]`
+
+Lookup-style relationships detected from data: key/category columns
+compared pairwise across workbooks (or across sheets of one workbook);
+≥50% overlap of the smaller value set (and ≥2 shared values) yields a
+link with coverage in both directions and sample keys.
+
+### `sharedNames(): SharedName[]` · `findValue(query, { workbook?, sheet?, limit? })` · `summariseRegion(book, target, mode?, budget?)` · `inspect(address)`
+
+Names defined in 2+ workbooks; collection-wide value search (qualified
+addresses); region summaries tagged with their workbook; cell inspection
+with `workbook` and `crossDependents` added.
+
+### `resolveAddress(address): { book, ref }` · `resolveExternalName(name): string | undefined`
+
+Address plumbing, exposed for tooling. `resolveExternalName` matches
+basenames case-insensitively, tolerating paths and missing extensions;
+numeric link-table indices (`[1]Sheet1!A1`) return undefined.
+
+Related: `WorkbookGraph.tracePrecedents` accepts an optional third
+`TraceHooks` argument (address qualifier, shared cycle stack, external
+resolver) — this is the seam Collections use, available to other tooling.
+
+---
+
 ## class `Region`
 
 `id` (stable `rg_…`), `sheet`, `rangeA1` (sheet-qualified), `kind`
@@ -177,6 +246,14 @@ pharos context <file> <address> [-d depth] [-m mode] [-b tokens] [--max-regions 
 pharos precedents <file> <address> [-d depth] [--json]
 pharos dependents <file> <address> [-d depth] [--json]
 pharos find <file> <query> [-s sheet] [--regex] [--limit n] [--json]
+
+pharos collection <files...> [--json]              # overview (default)
+pharos collection <files...> --links [--json]
+pharos collection <files...> --inspect    "[book.xlsx]Sheet!A1"
+pharos collection <files...> --context    "[book.xlsx]Sheet!A1" [-d depth] [-m mode] [-b tokens]
+pharos collection <files...> --precedents "[book.xlsx]Sheet!A1" [-d depth]
+pharos collection <files...> --dependents "[book.xlsx]Sheet!A1" [-d depth]
+pharos collection <files...> --find <query>
 ```
 
 Exit code 0 on success, 1 on any error (message on stderr, prefixed

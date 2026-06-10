@@ -100,6 +100,30 @@ export interface LoadOptions {
   parser?: WorkbookParser;
 }
 
+/**
+ * Optional hooks for precedent traces. Used by Collections to qualify
+ * addresses with a workbook name, share one cycle stack across workbooks,
+ * and resolve external references into other loaded workbooks. With no
+ * hooks, traces behave exactly as in v0.1.x.
+ */
+export interface TraceHooks {
+  /** Rewrite addresses placed in trace nodes (e.g. prefix `[Book.xlsx]`). */
+  qualify?: (address: string) => string;
+  /** Prefix for cycle-stack keys; must be unique per workbook in a collection. */
+  stackKeyPrefix?: string;
+  /**
+   * Resolve an external-workbook reference into a subtree. Return undefined
+   * to fall back to the default stub node.
+   */
+  resolveExternal?: (
+    external: string,
+    range: RangeRef | undefined,
+    raw: string,
+    depth: number,
+    stack: Set<string>
+  ) => TraceNode | undefined;
+}
+
 export class WorkbookGraph {
   private readonly sheetMap = new Map<string, SheetData>();
   private readonly order: string[] = [];
@@ -251,6 +275,16 @@ export class WorkbookGraph {
   getCell(target: string | CellRef): CellNode | undefined {
     const ref = typeof target === 'string' ? this.resolveAddress(target) : target;
     return this.sheet(ref.sheet)?.cells.get(cellKey(ref.row, ref.col));
+  }
+
+  /** Iterate every stored (non-empty) cell, optionally for one sheet. */
+  *cells(sheetName?: string): Generator<CellNode> {
+    const names = sheetName === undefined ? this.order : [sheetName];
+    for (const name of names) {
+      const sd = this.sheet(name);
+      if (!sd) throw new Error(`Sheet "${name}" not found. Sheets: ${this.order.join(', ')}`);
+      yield* sd.cells.values();
+    }
   }
 
   sheets(): SheetInfo[] {
@@ -431,16 +465,45 @@ export class WorkbookGraph {
     return uniq(out);
   }
 
-  /** Recursively trace what a cell's formula depends on. */
-  tracePrecedents(address: string, depth = 2): TraceNode {
-    const ref = this.resolveAddress(address);
-    return this.precedentNode(ref, depth, new Set([this.addrKey(ref)]));
+  /** Apply the optional address qualifier from trace hooks. */
+  private static hq(hooks: TraceHooks | undefined, s: string): string {
+    return hooks?.qualify ? hooks.qualify(s) : s;
   }
 
-  private precedentNode(ref: CellRef, depth: number, stack: Set<string>): TraceNode {
+  private hkey(hooks: TraceHooks | undefined, ref: CellRef): string {
+    return (hooks?.stackKeyPrefix ?? '') + this.addrKey(ref);
+  }
+
+  /**
+   * Recursively trace what a cell's formula depends on. `hooks` (optional)
+   * let a Collection qualify addresses, share a cycle stack across
+   * workbooks and resolve external references — see TraceHooks. Without
+   * hooks, behavior is identical to v0.1.x.
+   */
+  tracePrecedents(address: string, depth = 2, hooks?: TraceHooks): TraceNode {
+    const ref = this.resolveAddress(address);
+    return this.precedentNode(ref, depth, new Set([this.hkey(hooks, ref)]), hooks);
+  }
+
+  /** Advanced: precedent trace continuing an existing cycle stack (Collections). */
+  traceFrom(ref: CellRef, depth: number, stack: Set<string>, hooks?: TraceHooks): TraceNode {
+    return this.precedentNode(ref, depth, stack, hooks);
+  }
+
+  /** Advanced: trace into a range target with an existing cycle stack (Collections). */
+  traceRange(range: RangeRef, depth: number, stack: Set<string>, hooks?: TraceHooks): TraceNode {
+    return this.rangeNode(range, depth, stack, hooks);
+  }
+
+  private precedentNode(
+    ref: CellRef,
+    depth: number,
+    stack: Set<string>,
+    hooks?: TraceHooks
+  ): TraceNode {
     const cell = this.getCell(ref);
     const node: TraceNode = {
-      address: formatCell(ref),
+      address: WorkbookGraph.hq(hooks, formatCell(ref)),
       kind: 'cell',
       value: cell?.valueJson ?? null,
       children: []
@@ -455,6 +518,11 @@ export class WorkbookGraph {
     for (const fr of cell.refs) {
       const ext = fr.external ?? fr.range?.external;
       if (ext) {
+        const resolved = hooks?.resolveExternal?.(ext, fr.range, fr.raw, depth - 1, stack);
+        if (resolved) {
+          node.children.push(resolved);
+          continue;
+        }
         node.children.push({
           address: fr.raw,
           kind: 'external',
@@ -478,34 +546,41 @@ export class WorkbookGraph {
           kind: 'name',
           children: [],
           note: fr.resolved?.length
-            ? `defined name → ${fr.resolved.map((r) => formatRange(r)).join(', ')}`
+            ? `defined name → ${fr.resolved.map((r) => WorkbookGraph.hq(hooks, formatRange(r))).join(', ')}`
             : 'undefined name'
         };
-        for (const r of fr.resolved ?? []) child.children.push(this.rangeNode(r, depth - 1, stack));
+        for (const r of fr.resolved ?? []) {
+          child.children.push(this.rangeNode(r, depth - 1, stack, hooks));
+        }
         node.children.push(child);
         continue;
       }
-      if (fr.range) node.children.push(this.rangeNode(fr.range, depth - 1, stack));
+      if (fr.range) node.children.push(this.rangeNode(fr.range, depth - 1, stack, hooks));
     }
     return node;
   }
 
-  private rangeNode(range: RangeRef, depth: number, stack: Set<string>): TraceNode {
+  private rangeNode(
+    range: RangeRef,
+    depth: number,
+    stack: Set<string>,
+    hooks?: TraceHooks
+  ): TraceNode {
     const sd = this.sheet(range.sheet);
     const clamped = sd && range.open ? clampRange(range, sd.maxRow, sd.maxCol) : range;
     if (rangeArea(clamped) === 1) {
       const ref: CellRef = { sheet: sd?.name ?? clamped.sheet, row: clamped.startRow, col: clamped.startCol };
-      const key = this.addrKey(ref);
+      const key = this.hkey(hooks, ref);
       if (stack.has(key)) {
-        return { address: formatCell(ref), kind: 'cell', children: [], cycle: true };
+        return { address: WorkbookGraph.hq(hooks, formatCell(ref)), kind: 'cell', children: [], cycle: true };
       }
       stack.add(key);
-      const node = this.precedentNode(ref, depth, stack);
+      const node = this.precedentNode(ref, depth, stack, hooks);
       stack.delete(key);
       return node;
     }
     const node: TraceNode = {
-      address: formatRange(clamped),
+      address: WorkbookGraph.hq(hooks, formatRange(clamped)),
       kind: 'range',
       cellCount: rangeArea(clamped),
       children: []
@@ -537,10 +612,10 @@ export class WorkbookGraph {
     const top = [...templates.values()].sort((a, b) => b.count - a.count)[0];
     node.note = `${nonEmpty} cells, ${formulaCells.length} formula(s); dominant pattern =${top.first.formula} (${top.count}×)`;
     if (depth > 0) {
-      const key = this.addrKey(top.first.ref);
+      const key = this.hkey(hooks, top.first.ref);
       if (!stack.has(key)) {
         stack.add(key);
-        const rep = this.precedentNode(top.first.ref, depth - 1, stack);
+        const rep = this.precedentNode(top.first.ref, depth - 1, stack, hooks);
         rep.note = `representative of ${top.count} cell(s) with this pattern`;
         node.children.push(rep);
         stack.delete(key);
