@@ -1,0 +1,68 @@
+{
+  "name": "pharos-sheets",
+  "version": "0.1.0",
+  "description": "Turn Excel workbooks into navigable graphs: region detection, formula tracing, context diffusion and token-budgeted summaries for AI agents and analysts.",
+  "keywords": [
+    "excel",
+    "xlsx",
+    "spreadsheet",
+    "graph",
+    "ai",
+    "agents",
+    "llm",
+    "context",
+    "formula",
+    "audit",
+    "exceljs"
+  ],
+  "license": "MIT",
+  "author": "Nicholas Rixford",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "pharos": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "fixtures": "ts-node scripts/make-fixtures.ts",
+    "lint": "eslint src test scripts",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run build && npm run fixtures",
+    "test": "jest",
+    "prepublishOnly": "npm run clean && npm run build",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.17.0",
+    "eslint": "^9.14.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.14.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rixford/pharos.git"
+  },
+  "homepage": "https://github.com/Rixford/pharos#readme",
+  "bugs": {
+    "url": "https://github.com/Rixford/pharos/issues"
+  }
+}
