@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 — 2026-06-12
+
+The zoomable context model — proven by a closed-loop liquidity benchmark
+(`bench/`, see bench/REPORT.md for before/after numbers).
+
+- `extractTable` (zoom L6): complete typed rows keyed by headers, per-row
+  A1 provenance, offset/limit paging, column filters, subtotal rows
+  excluded by default with a verification echo (`subtotals`).
+- Region sections (zoom L3): subtotal/grand-total rows detected by label
+  and by SUM-formula shape; grouped sections with cleaned labels; column
+  stats and key columns now exclude subtotal rows.
+- Two-row grouped headers (`headerRows`, headers like `Amounts · Billed`).
+- Notes blocks: new `notes` region kind, attached to host tables.
+- Column roles (zoom L4): key/id/category/measure/date/month/computed/text.
+- Region purpose tags (`payments / cash receipts (by month)` …).
+- `locate(question)` on WorkbookGraph and Collection: deterministic
+  question→region ranking with a business-synonym lexicon (pluggable).
+- `sheetMap(sheet)` (zoom L1): region inventory with purposes and notes.
+- Question-aware diffusion: `expandContext(seed, { question })`.
+- CLI: `pharos map`, `pharos locate`, `pharos extract`, `context --question`.
+- Benchmark harness: deterministic two-workbook fixture generator, hidden
+  gold liquidity report, blind solver (Pharos-only), tolerance scorer,
+  multi-seed runner (`npm run bench`), Jest e2e; validated additionally by
+  a clean-room LLM blind agent (100% score on an unseen seed).
+- Keys: pure-number columns are no longer marked key columns.
+
 ## 0.2.0 — 2026-06-10
 
 Pharos Collections — multi-workbook graphs.

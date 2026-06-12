@@ -3,7 +3,7 @@
  * https://github.com/…/pharos
  */
 export { WorkbookGraph } from './core/WorkbookGraph';
-export type { CellInspection, DefinedName, FindHit, LoadOptions, TraceHooks } from './core/WorkbookGraph';
+export type { CellInspection, DefinedName, FindHit, LoadOptions, TraceHooks, SheetMap, SheetMapRegion } from './core/WorkbookGraph';
 export { Collection } from './core/Collection';
 export type {
   CollectionInput,
@@ -38,5 +38,9 @@ export type { ExtractResult, RefSpan } from './parser/FormulaParser';
 export { ExcelParser } from './parser/ExcelParser';
 export type { WorkbookParser, ParsedWorkbook, ParsedSheet, ParsedCell } from './parser/types';
 export { detectRegions } from './analysis/RegionDetector';
+export { extractTable } from './analysis/Extractor';
+export type { ExtractOptions, ExtractedTable, ExtractedColumn } from './analysis/Extractor';
+export { locateRegions } from './analysis/Locate';
+export type { LocateHit, LocateOptions, LocateTarget } from './analysis/Locate';
 export { summariseRegion, estimateTokens } from './analysis/Summariser';
 export { expandContext } from './analysis/Diffuser';

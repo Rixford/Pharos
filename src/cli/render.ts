@@ -1,8 +1,10 @@
 /**
  * Human-readable renderers for CLI output. JSON mode bypasses these.
  */
-import { CellInspection } from '../core/WorkbookGraph';
+import { CellInspection, SheetMap } from '../core/WorkbookGraph';
 import { CollectionOverview } from '../core/Collection';
+import { ExtractedTable } from '../analysis/Extractor';
+import { LocateHit } from '../analysis/Locate';
 import { ContextPacket, RegionSummary, TraceNode, WorkbookOverview } from '../core/types';
 
 const indent = (text: string, pad: string): string =>
@@ -215,5 +217,55 @@ export function renderCollectionOverview(o: CollectionOverview): string {
     lines.push('Warnings:');
     for (const w of o.warnings.slice(0, 8)) lines.push(`  ! ${w}`);
   }
+  return lines.join('\n');
+}
+
+export function renderSheetMap(map: SheetMap): string {
+  const lines: string[] = [];
+  lines.push(`Sheet ${map.sheet}${map.hidden ? ' (HIDDEN)' : ''}  ${map.usedRangeA1 ?? '(empty)'}${map.purpose ? `  — ${map.purpose}` : ''}`);
+  for (const region of map.regions) {
+    const bits = [
+      `${region.rows}×${region.cols}`,
+      region.purpose ?? region.kind,
+      region.sections ? `${region.sections} sections` : '',
+      region.hasNotes ? 'has notes' : '',
+      `conf ${region.confidence}`
+    ].filter(Boolean);
+    lines.push(`  [${region.id}] ${region.kind.padEnd(8)} ${region.rangeA1.padEnd(24)} ${bits.join(' · ')}${region.title ? `  “${region.title}”` : ''}`);
+    if (region.headers && region.headers.length > 0) lines.push(`      headers: ${region.headers.join(', ')}`);
+  }
+  if (map.notes.length > 0) {
+    lines.push('  notes:');
+    for (const note of map.notes.slice(0, 6)) lines.push(`    - ${note}`);
+  }
+  return lines.join('\n');
+}
+
+export function renderLocateHits(hits: LocateHit[]): string {
+  if (hits.length === 0) return 'no matching regions';
+  return hits
+    .map((h, i) => {
+      const where = h.workbook ? `[${h.workbook}]${h.rangeA1}` : h.rangeA1;
+      return `${i + 1}. (${h.score}) [${h.regionId}] ${h.kind} ${where}${h.hiddenSheet ? ' (HIDDEN sheet)' : ''}${h.purpose ? ` — ${h.purpose}` : ''}\n   ${h.why}`;
+    })
+    .join('\n');
+}
+
+export function renderExtract(t: ExtractedTable): string {
+  const lines: string[] = [];
+  const where = t.workbook ? `[${t.workbook}]${t.rangeA1}` : t.rangeA1;
+  lines.push(`Extract [${t.regionId}] ${where} — rows ${t.offset + 1}–${t.offset + t.returned} of ${t.totalDataRows}${t.complete ? ' (complete)' : ''} · ~${t.tokens} tokens`);
+  lines.push(`columns: ${t.columns.map((c) => `${c.name}${c.role ? ` <${c.role}>` : ''}`).join(' | ')}`);
+  if (t.excludedSubtotalRows && t.excludedSubtotalRows.length > 0) {
+    lines.push(`excluded subtotal rows: ${t.excludedSubtotalRows.join(', ')}`);
+  }
+  for (const [i, row] of t.rows.slice(0, 12).entries()) {
+    lines.push(`  ${t.rowProvenance[i].padEnd(22)} ${t.columns.map((c) => String(row[c.name] ?? '')).join(' | ')}`);
+  }
+  if (t.rows.length > 12) lines.push(`  … ${t.rows.length - 12} more rows`);
+  if (t.sections && t.sections.length > 0) {
+    lines.push(`sections: ${t.sections.map((s) => `${s.label ?? '(unlabelled)'} rows ${s.rows[0]}–${s.rows[1]}`).join(' · ')}`);
+  }
+  for (const w of t.warnings) lines.push(`! ${w}`);
   return lines.join('\n');
 }

@@ -27,6 +27,7 @@ import {
   CellRef,
   CellStyle,
   CellValueType,
+  RegionKind,
   ContextPacket,
   DiffusionOptions,
   FormulaRef,
@@ -45,6 +46,8 @@ import { canonicalizeFormula, extractRefs } from '../parser/FormulaParser';
 import { ExcelParser } from '../parser/ExcelParser';
 import { ParsedWorkbook, WorkbookParser } from '../parser/types';
 import { detectRegions as detectRegionsInGrid } from '../analysis/RegionDetector';
+import { ExtractOptions, ExtractedTable, extractTable as extractTableImpl } from '../analysis/Extractor';
+import { LocateHit, LocateOptions, locateRegions } from '../analysis/Locate';
 import { summariseRegion as summariseRegionImpl } from '../analysis/Summariser';
 import { expandContext as expandContextImpl } from '../analysis/Diffuser';
 
@@ -95,6 +98,30 @@ export interface FindHit {
   regionId?: string;
 }
 
+export interface SheetMapRegion {
+  id: string;
+  rangeA1: string;
+  kind: RegionKind;
+  purpose?: string;
+  title?: string;
+  headers?: string[];
+  rows: number;
+  cols: number;
+  sections?: number;
+  hasNotes: boolean;
+  confidence: number;
+}
+
+/** Zoom level 1 — a sheet's layout at a glance. */
+export interface SheetMap {
+  sheet: string;
+  hidden: boolean;
+  usedRangeA1?: string;
+  purpose?: string;
+  regions: SheetMapRegion[];
+  notes: string[];
+}
+
 export interface LoadOptions {
   /** Override the parser (e.g. a CSV adapter). Defaults to ExcelParser. */
   parser?: WorkbookParser;
@@ -125,7 +152,7 @@ export interface TraceHooks {
 }
 
 export class WorkbookGraph {
-  private readonly sheetMap = new Map<string, SheetData>();
+  private readonly sheetStore = new Map<string, SheetData>();
   private readonly order: string[] = [];
   readonly definedNames: DefinedName[] = [];
   readonly warnings: string[] = [];
@@ -213,7 +240,7 @@ export class WorkbookGraph {
           })
         );
       }
-      this.sheetMap.set(ps.name.toLowerCase(), {
+      this.sheetStore.set(ps.name.toLowerCase(), {
         name: ps.name,
         index: ps.index,
         hidden: ps.hidden,
@@ -245,7 +272,7 @@ export class WorkbookGraph {
   /** First visible sheet (used to resolve unqualified addresses). */
   get defaultSheet(): string {
     for (const name of this.order) {
-      if (!this.sheetMap.get(name.toLowerCase())!.hidden) return name;
+      if (!this.sheetStore.get(name.toLowerCase())!.hidden) return name;
     }
     return this.order[0];
   }
@@ -259,7 +286,7 @@ export class WorkbookGraph {
   }
 
   private sheet(name: string): SheetData | undefined {
-    return this.sheetMap.get(name.toLowerCase());
+    return this.sheetStore.get(name.toLowerCase());
   }
 
   /** Parse + validate an address against this workbook. Sheet names are case-insensitive. */
@@ -392,6 +419,58 @@ export class WorkbookGraph {
     return expandContextImpl(this, address, options);
   }
 
+  /**
+   * Zoom level 6: transformation-ready extraction. Typed rows keyed by
+   * header names, subtotal rows excluded (no double counting), per-row
+   * provenance, deterministic offset/limit paging.
+   */
+  extractTable(target: string | Region, opts: ExtractOptions = {}): ExtractedTable {
+    const region = this.toRegion(target);
+    return extractTableImpl(region.data, this.cellLookup, opts);
+  }
+
+  /** Question-aware narrowing: rank this workbook's regions against a question. */
+  locate(question: string, opts?: LocateOptions): LocateHit[] {
+    return locateRegions(this.allRegions().map((r) => ({ region: r.data })), question, opts);
+  }
+
+  /** Zoom level 1: a sheet's region inventory with purposes and notes. */
+  sheetMap(sheetName: string): SheetMap {
+    const sd = this.sheet(sheetName);
+    if (!sd) throw new Error(`Sheet "${sheetName}" not found. Sheets: ${this.order.join(', ')}`);
+    const regions = this.detectRegions(sd.name);
+    const notes: string[] = [];
+    for (const region of regions.filter((r) => r.kind === 'notes')) {
+      for (let r = region.data.range.startRow; r <= region.data.range.endRow; r++) {
+        for (let c = region.data.range.startCol; c <= region.data.range.endCol; c++) {
+          const cell = sd.cells.get(cellKey(r, c));
+          if (cell && typeof cell.value === 'string') notes.push(cell.value);
+        }
+      }
+    }
+    const purposes = [...new Set(regions.filter((r) => r.kind !== 'notes' && r.data.purpose).map((r) => r.data.purpose!))];
+    return {
+      sheet: sd.name,
+      hidden: sd.hidden,
+      usedRangeA1: sd.cells.size > 0 ? `A1:${colToLetter(sd.maxCol)}${sd.maxRow}` : undefined,
+      purpose: purposes.length > 0 ? purposes.slice(0, 3).join(' · ') : undefined,
+      regions: regions.map((r) => ({
+        id: r.id,
+        rangeA1: r.rangeA1,
+        kind: r.kind,
+        purpose: r.data.purpose,
+        title: r.title,
+        headers: r.headers?.slice(0, 10),
+        rows: r.data.dataRowCount,
+        cols: r.data.colCount,
+        sections: r.data.sections?.filter((x) => x.kind === 'group').length,
+        hasNotes: (r.data.notes?.length ?? 0) > 0,
+        confidence: r.confidence
+      })),
+      notes
+    };
+  }
+
   /** Formula targets (resolved ranges) referenced from inside a region. */
   regionFormulaTargets(region: Region, cap = 500): RangeRef[] {
     const sd = this.sheet(region.sheet);
@@ -426,7 +505,7 @@ export class WorkbookGraph {
   private buildDeps(): void {
     const direct = new Map<string, string[]>();
     const ranged = new Map<string, { range: RangeRef; dep: string }[]>();
-    for (const sd of this.sheetMap.values()) {
+    for (const sd of this.sheetStore.values()) {
       for (const cell of sd.cells.values()) {
         if (cell.refs.length === 0) continue;
         for (const range of this.targetRanges(cell.refs)) {

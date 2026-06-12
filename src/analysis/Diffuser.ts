@@ -29,6 +29,7 @@ import {
   SeedSummary
 } from '../core/types';
 import { uniq } from '../core/util';
+import { locateRegions } from './Locate';
 import { estimateTokens } from './Summariser';
 import type { WorkbookGraph } from '../core/WorkbookGraph';
 
@@ -72,7 +73,8 @@ export function expandContext(
     minWeight: options?.minWeight ?? 0.15,
     decay: options?.decay ?? 0.75,
     weights: { ...DEFAULT_EDGE_WEIGHTS, ...options?.weights },
-    includeTrace: options?.includeTrace ?? true
+    includeTrace: options?.includeTrace ?? true,
+    question: options?.question
   };
 
   const warnings: string[] = [];
@@ -137,6 +139,15 @@ export function expandContext(
   const queue: Frontier[] = [];
   const seen = new Set<string>();
 
+  // Question-aware relevance: regions matching the question get a weight
+  // boost and the top hits are enqueued as semantic candidates.
+  let questionScore: Map<string, number> | undefined;
+  if (opts.question) {
+    const hits = locateRegions(graph.allRegions().map((r) => ({ region: r.data })), opts.question, { top: 12, minScore: 1 });
+    const max = hits[0]?.score ?? 0;
+    if (max > 0) questionScore = new Map(hits.map((h) => [h.regionId, h.score / max]));
+  }
+
   const push = (
     region: Region | undefined,
     depth: number,
@@ -145,7 +156,9 @@ export function expandContext(
     why: string,
     from: string
   ): void => {
-    if (!region || seen.has(region.id)) return;
+    if (!region) return;
+    if (questionScore?.has(region.id)) weight = weight * (1 + 0.4 * questionScore.get(region.id)!);
+    if (seen.has(region.id)) return;
     if (depth > opts.depth || weight < opts.minWeight) return;
     const existing = queue.find((q) => q.region.id === region.id);
     if (existing) {
@@ -183,6 +196,20 @@ export function expandContext(
     if (nearest) {
       push(nearest, 0, opts.weights.spatial, 'spatial', 'nearest region to the (empty) seed cell', seed);
       nextActions.push(`Seed ${seed} is outside any region — nearest is ${nearest.id} at ${nearest.rangeA1}`);
+    }
+  }
+
+  if (questionScore && opts.depth >= 1) {
+    const hits = locateRegions(graph.allRegions().map((r) => ({ region: r.data })), opts.question!, { top: 3, minScore: 1 });
+    for (const hit of hits) {
+      push(
+        graph.getRegion(hit.regionId),
+        1,
+        opts.weights.semantic,
+        'semantic',
+        `matches the question (${hit.matched.slice(0, 3).join(', ')})`,
+        seed
+      );
     }
   }
 

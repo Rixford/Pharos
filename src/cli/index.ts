@@ -19,10 +19,13 @@ import { GRANULARITY_MODES, GranularityMode } from '../core/types';
 import {
   renderCollectionLinks,
   renderCollectionOverview,
+  renderExtract,
   renderInspection,
+  renderLocateHits,
   renderOverview,
   renderPacket,
   renderRegionSummary,
+  renderSheetMap,
   renderTrace
 } from './render';
 
@@ -142,6 +145,7 @@ program
   .option('-b, --budget <tokens>', 'token budget for the packet', parseIntOption, 2000)
   .option('--max-regions <n>', 'cap on regions included', parseIntOption, 8)
   .option('--no-trace', 'skip the precedent/dependent trace excerpt')
+  .option('-q, --question <text>', 'boost regions matching this question')
   .option('--json', 'output JSON')
   .action(
     (
@@ -153,6 +157,7 @@ program
         budget: number;
         maxRegions: number;
         trace: boolean;
+        question?: string;
         json?: boolean;
       }
     ) =>
@@ -163,9 +168,75 @@ program
           mode: opts.mode,
           tokenBudget: opts.budget,
           maxRegions: opts.maxRegions,
-          includeTrace: opts.trace
+          includeTrace: opts.trace,
+          question: opts.question
         });
         emit(!!opts.json, packet, () => renderPacket(packet));
+      })
+  );
+
+program
+  .command('map')
+  .description('zoom level 1: per-sheet region inventory with purposes and notes')
+  .argument('<file>', 'path to .xlsx workbook')
+  .argument('[sheet]', 'sheet name (default: all sheets)')
+  .option('--json', 'output JSON')
+  .action((file: string, sheet: string | undefined, opts: { json?: boolean }) =>
+    run(async () => {
+      const graph = await loadGraph(file);
+      const names = sheet ? [sheet] : graph.sheetNames();
+      const maps = names.map((n) => graph.sheetMap(n));
+      emit(!!opts.json, sheet ? maps[0] : maps, () => maps.map(renderSheetMap).join('\n\n'));
+    })
+  );
+
+program
+  .command('locate')
+  .description('rank regions against a natural-language question (one or more workbooks)')
+  .argument('<question>', 'e.g. "how much cash is going out by month?"')
+  .argument('<files...>', 'one or more .xlsx workbooks')
+  .option('--top <n>', 'maximum hits', parseIntOption, 8)
+  .option('--json', 'output JSON')
+  .action((question: string, files: string[], opts: { top: number; json?: boolean }) =>
+    run(async () => {
+      for (const f of files) if (!fs.existsSync(f)) throw new Error(`file not found: ${f}`);
+      if (files.length === 1) {
+        const graph = await loadGraph(files[0]);
+        const hits = graph.locate(question, { top: opts.top });
+        emit(!!opts.json, hits, () => renderLocateHits(hits));
+      } else {
+        const collection = await Collection.load(files);
+        const hits = collection.locate(question, { top: opts.top });
+        emit(!!opts.json, hits, () => renderLocateHits(hits));
+      }
+    })
+  );
+
+program
+  .command('extract')
+  .description('zoom level 6: transformation-ready rows from a region (subtotals excluded)')
+  .argument('<file>', 'path to .xlsx workbook')
+  .argument('<target>', 'region id (rg_…) or any cell address inside the region')
+  .option('--offset <n>', 'data-row offset', parseIntOption, 0)
+  .option('--limit <n>', 'maximum rows', parseIntOption)
+  .option('--columns <list>', 'comma-separated column-name filter')
+  .option('--include-subtotals', 'include subtotal rows (beware double counting)')
+  .option('--json', 'output JSON')
+  .action(
+    (
+      file: string,
+      target: string,
+      opts: { offset: number; limit?: number; columns?: string; includeSubtotals?: boolean; json?: boolean }
+    ) =>
+      run(async () => {
+        const graph = await loadGraph(file);
+        const table = graph.extractTable(target, {
+          offset: opts.offset,
+          limit: opts.limit,
+          columns: opts.columns?.split(',').map((x) => x.trim()),
+          includeSubtotals: opts.includeSubtotals
+        });
+        emit(!!opts.json, table, () => renderExtract(table));
       })
   );
 

@@ -46,6 +46,8 @@ import {
 } from './types';
 import { uniq } from './util';
 import { estimateTokens } from '../analysis/Summariser';
+import { ExtractOptions, ExtractedTable } from '../analysis/Extractor';
+import { LocateHit, LocateOptions, LocateTarget, locateRegions } from '../analysis/Locate';
 
 export interface CollectionInput {
   /** Workbook name used in qualified addresses (defaults to the file basename). */
@@ -518,6 +520,28 @@ export class Collection {
       workbook: display,
       sourceCells: summary.sourceCells.map((s) => this.q(display, s))
     };
+  }
+
+  /** Zoom level 6 across books: extraction with workbook-qualified provenance. */
+  extractTable(book: string, target: string | Region, opts: ExtractOptions = {}): ExtractedTable {
+    const display = this.displayName(book);
+    const table = this.graph(book).extractTable(target, opts);
+    return {
+      ...table,
+      workbook: display,
+      rowProvenance: table.rowProvenance.map((p) => this.q(display, p))
+    };
+  }
+
+  /** Question-aware narrowing across every workbook in the collection. */
+  locate(question: string, opts?: LocateOptions): LocateHit[] {
+    const targets: LocateTarget[] = [];
+    for (const book of this.order) {
+      for (const region of this.graph(book).detectRegions()) {
+        targets.push({ region: region.data, workbook: book });
+      }
+    }
+    return locateRegions(targets, question, opts);
   }
 
   // ── cross-workbook tracing ────────────────────────────────────────────────

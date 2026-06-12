@@ -77,7 +77,8 @@ Direct dependents (addresses), including through ranges and named ranges.
 ### `expandContext(address: string, options?: DiffusionOptions): ContextPacket`
 
 Weighted diffusion from a seed cell. See `DiffusionOptions` defaults in
-the README table. The `ContextPacket` contains:
+the README table. `options.question` (v0.3) boosts and injects regions
+that match a natural-language question (deterministic, via `locate`). The `ContextPacket` contains:
 
 | field | meaning |
 |---|---|
@@ -89,6 +90,33 @@ the README table. The `ContextPacket` contains:
 | `warnings` | hidden sheets, external workbooks, empty seed, … |
 | `sourceCells` | union of all evidence coordinates |
 | `tokens`, `truncated` | budget accounting |
+
+### `extractTable(target: string | Region, opts?: ExtractOptions): ExtractedTable`
+
+Zoom level 6 — transformation-ready extraction. Returns `columns` (name,
+letter, role, type), typed `rows` keyed by header names (Dates → ISO),
+`rowProvenance` (one A1 range per row), `sections` (grouped blocks),
+`excludedSubtotalRows` + `subtotals` (an echo of each excluded subtotal
+row for verification — they are summaries of other rows and would double
+count), `totalDataRows`/`offset`/`returned`/`complete` for paging, and a
+token estimate. Options: `offset`, `limit`, `columns` (name filter),
+`includeSubtotals`. `target` is a region id or any address inside it.
+
+### `locate(question: string, opts?: LocateOptions): LocateHit[]`
+
+Question-aware narrowing. Ranks this workbook's regions against a
+natural-language question using a built-in business-synonym lexicon plus
+region metadata (sheet, title, purpose, headers, section labels, category
+samples, attached notes). Deterministic — no model calls; extend the
+lexicon via `opts.synonyms` or re-rank hits with your own embedder. Data
+kinds outrank notes at equal score; "hidden" in the question boosts
+hidden-sheet regions. Also on `Collection` (hits carry `workbook`).
+
+### `sheetMap(sheetName: string): SheetMap`
+
+Zoom level 1 — a sheet's layout at a glance: regions with kind, purpose,
+title, headers, row/col counts, section counts, notes flags, plus the
+sheet's collected note lines and an overall purpose tag.
 
 ### `findValue(query: string | number | RegExp, opts?: { sheet?: string; limit?: number }): FindHit[]`
 
@@ -177,6 +205,15 @@ resolver) — this is the seam Collections use, available to other tooling.
 
 ---
 
+## Zoom levels at a glance
+
+L0 `overview()` · L1 `sheetMap()` · L2 `summariseRegion()` ·
+L3 `RegionData.sections` (+`subtotalRows`) · L4 `ColumnProfile.role` ·
+L5 `inspect()`/`tracePrecedents()` · L6 `extractTable()`.
+`locate(question)` and `expandContext({ question })` connect the levels.
+
+---
+
 ## class `Region`
 
 `id` (stable `rg_…`), `sheet`, `rangeA1` (sheet-qualified), `kind`
@@ -254,6 +291,11 @@ pharos collection <files...> --context    "[book.xlsx]Sheet!A1" [-d depth] [-m m
 pharos collection <files...> --precedents "[book.xlsx]Sheet!A1" [-d depth]
 pharos collection <files...> --dependents "[book.xlsx]Sheet!A1" [-d depth]
 pharos collection <files...> --find <query>
+
+pharos map <file> [sheet] [--json]
+pharos locate <question> <files...> [--top n] [--json]
+pharos extract <file> <target> [--offset n] [--limit n] [--columns a,b] [--include-subtotals] [--json]
+pharos context <file> <address> -q "<question>" ...
 ```
 
 Exit code 0 on success, 1 on any error (message on stderr, prefixed

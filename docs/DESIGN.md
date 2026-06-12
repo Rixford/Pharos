@@ -183,6 +183,54 @@ Not yet addressed: streaming parses (ExcelJS holds the workbook in
 memory), worker-thread parallelism. Both are roadmap items; medium
 workbooks (10⁴–10⁵ cells) load in well under a second of analysis time.
 
+## The zoomable context model (v0.3)
+
+Agent context is organised as zoom levels L0–L6 (workbook → sheet →
+region → section → column → cell → extraction); the README has the
+level-to-API table. Design notes per level:
+
+* **Sections (L3)**: a data row is a subtotal when its label *ends* with
+  total/subtotal (mid-sentence "…totals include…" wording must not
+  match — that bug class was caught by the benchmark's blind LLM agent),
+  or when a cell SUMs a same-column range ending directly above it.
+  Subtotal rows are excluded from column statistics, key-column
+  inference and `extractTable` rows; groups take their labels from the
+  subtotal that closes them ("Acme Industrial — Subtotal" → "Acme
+  Industrial").
+* **Grouped headers**: a top row of merged, all-string cells above a row
+  that itself passes the header test yields `headerRows: [r, r+1]` and
+  combined names (`Amounts · Billed`) so columns stay addressable.
+* **Notes (L1/L3)**: short, wide-text, formula-free blocks become kind
+  `notes`, get purpose `notes` (so they never outrank the data they
+  annotate in `locate`), and their text is attached to the nearest table
+  above as `region.notes` — where it *strengthens* that table's
+  semantic haystack.
+* **Roles (L4)**: deterministic per-column business roles; pure-number
+  all-distinct columns are deliberately not key columns.
+* **`locate` (navigation)**: groups of business synonyms; a question
+  selects groups, groups score against sheet/title/purpose/headers/
+  extras with field-deduped weights; kind preference breaks ties toward
+  data. The lexicon is data, not code — extendable per call; embedding
+  re-rankers can sit on top without touching the deterministic core.
+* **`extractTable` (L6)**: the hand-off from *understanding* to
+  *computing*. Completeness is explicit (`totalDataRows`, `complete`),
+  paging is deterministic, every row cites its A1 range, and exclusions
+  are echoed (`subtotals`) so an agent can verify rather than trust.
+
+## The liquidity benchmark (bench/)
+
+A closed-loop harness (see `bench/REPORT.md` for the full method,
+failure classification and before/after numbers): a seeded dataset
+builds two deliberately messy workbooks (grouped headers, interleaved
+subtotals, hidden mapping tabs, notes, decoy forecast); the gold
+liquidity report is computed from the raw dataset, never the files; a
+blind solver — and separately a clean-room LLM agent — must reconstruct
+it through public Pharos APIs only; a tolerance scorer enforces the
+thresholds. It runs in CI via `test/bench.e2e.test.ts` and across seeds
+via `npm run bench -- 42 7 1337`. v0.2 failed it (0% monthly accuracy
+under realistic call budgets); v0.3 passes every section on every seed
+tested, including the LLM run on an unseen seed.
+
 ## Collections (multi-workbook)
 
 `Collection` (v0.2) composes multiple WorkbookGraphs without modifying

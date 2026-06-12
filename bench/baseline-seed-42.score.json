@@ -1,0 +1,87 @@
+{
+  "score": {
+    "pass": false,
+    "sections": [
+      {
+        "name": "required sheets present",
+        "score": 1,
+        "threshold": 1,
+        "pass": true,
+        "details": []
+      },
+      {
+        "name": "required columns present",
+        "score": 1,
+        "threshold": 1,
+        "pass": true,
+        "details": []
+      },
+      {
+        "name": "month labels match",
+        "score": 1,
+        "threshold": 1,
+        "pass": true,
+        "details": []
+      },
+      {
+        "name": "monthly totals accuracy",
+        "score": 0,
+        "threshold": 0.98,
+        "pass": false,
+        "details": [
+          "inflows 2026-01: got 16782.87 want 144777.07",
+          "outflows 2026-01: got 285661.43 want 307013.46",
+          "net 2026-01: got -268878.56 want -162236.39",
+          "inflows 2026-02: got 10247.81 want 38175.82",
+          "outflows 2026-02: got 311535.65 want 334383.04",
+          "net 2026-02: got -301287.84 want -296207.22"
+        ]
+      },
+      {
+        "name": "grouped summary row match",
+        "score": 0.02,
+        "threshold": 0.95,
+        "pass": false,
+        "details": [
+          "Inflows by Customer: 0/8 rows matched",
+          "Inflows by Billing Category: 0/5 rows matched",
+          "Outflows by Department: 0/5 rows matched",
+          "Outflows by Cost Center: 1/10 rows matched",
+          "Outflows by Vendor: 0/10 rows matched"
+        ]
+      },
+      {
+        "name": "risk flags (critical complete)",
+        "score": 0.9,
+        "threshold": 0.9,
+        "pass": true,
+        "details": [
+          "VENDOR_SPIKE:AdSpark:2026-04"
+        ]
+      },
+      {
+        "name": "source provenance coverage",
+        "score": 1,
+        "threshold": 0.9,
+        "pass": true,
+        "details": []
+      },
+      {
+        "name": "reconciliation checks",
+        "score": 0,
+        "threshold": 1,
+        "pass": false,
+        "details": [
+          "2/5 checks reconcile (need ≥3, all passing)"
+        ]
+      }
+    ],
+    "solverTokens": 8543
+  },
+  "warnings": [
+    "incomplete extraction for [billing.xlsx]Payments!A3:E57 (truncated under 1500-token call budget)",
+    "incomplete extraction for [billing.xlsx]Invoices!A3:H69 (truncated under 1500-token call budget)",
+    "incomplete extraction for [costcenter.xlsx]'Vendor Spend'!A3:F65 (truncated under 1500-token call budget)",
+    "incomplete extraction for [costcenter.xlsx]'Cost Center Detail'!A3:I69 (truncated under 1500-token call budget)"
+  ]
+}

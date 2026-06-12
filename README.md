@@ -40,6 +40,11 @@ pharos dependents report.xlsx 'Sales!F35'
 pharos find report.xlsx "North" --sheet Sales
 
 pharos collection summary.xlsx sales.xlsx targets.xlsx   # multi-workbook link graph
+
+pharos map report.xlsx Payments                  # zoom L1: sheet region inventory
+pharos locate "cash going out by month?" a.xlsx b.xlsx   # question → ranked regions
+pharos extract report.xlsx rg_1a2b3c --json     # zoom L6: typed rows + provenance
+pharos context report.xlsx 'Summary!C2' --question "payroll by department"
 ```
 
 Every command accepts `--json` for machine-readable output. A `context` run looks like:
@@ -166,11 +171,47 @@ const packet = c.expandContext('[summary.xlsx]Dash!C2', { tokenBudget: 2500 });
 
 Addresses qualify with the workbook in brackets (`[Book.xlsx]Sheet!A1`); unqualified addresses use the first loaded workbook. The single-workbook API is unchanged — a Collection is pure composition over `WorkbookGraph`s.
 
+## The zoom model
+
+Pharos context is organised as hierarchical zoom levels, so an agent can move
+globe → street → object and back without drowning in cells:
+
+| level | scope | API |
+|---|---|---|
+| L0 | workbook | `overview()` / `pharos load` — sheets, hidden sheets, named ranges, regions, warnings |
+| L1 | sheet | `sheetMap(name)` / `pharos map` — region inventory, purposes, titles, notes |
+| L2 | region | `summariseRegion(id, mode, budget)` — six granularity modes |
+| L3 | section | `region.data.sections` — grouped blocks, subtotal & grand-total rows |
+| L4 | column/row | `ColumnProfile` — roles (key/category/measure/month/computed), stats, templates |
+| L5 | cell/formula | `inspect`, `tracePrecedents/Dependents` — values, formulas, hidden-sheet deps |
+| L6 | extraction | `extractTable(id)` / `pharos extract` — typed rows, per-row provenance, paging, **subtotals excluded** |
+
+Two navigation aids connect the levels: **`locate(question)`** ranks regions
+against a natural-language question with a deterministic business-synonym
+lexicon (inflows≈payments≈receipts≈collections…, data kinds outrank notes,
+hidden sheets surface when asked), and **`expandContext(seed, { question })`**
+boosts diffusion toward question-relevant regions. Both are deterministic —
+no embeddings or model calls; plug your own re-ranker on top of `LocateHit`s
+if you want one.
+
+A validated agent loop (this exact flow reconstructs a full liquidity report
+from two 10-tab workbooks in the repo's closed-loop benchmark —
+`bench/REPORT.md`):
+
+```ts
+const billing = await WorkbookGraph.load('billing.xlsx');
+const hits = billing.locate('how much cash came in by month?');      // narrow
+const rules = billing.extractTable(billing.locate('assumptions')[0].regionId);
+const payments = billing.extractTable(hits[0].regionId);             // L6 rows
+// payments.rows → typed objects · payments.rowProvenance → exact A1 ranges
+// payments.subtotals → what was excluded (no double counting, verifiable)
+```
+
 ## Concepts
 
 **Graph.** Cells, regions, sheets and the workbook are nodes. Edges come in five families: **spatial** (adjacency), **structural** (cell ∈ region ∈ sheet), **formula** (precedents/dependents, including through ranges and named ranges), **semantic** (shared headers, shared defined names) and **sheet** (same-sheet co-location).
 
-**Regions.** Detected — not declared — via occupancy flood-fill plus heuristics: blank-row boundaries, header rows (string coverage, type discontinuity with the row below, bold), attached titles and totals rows, per-column type/statistics profiling, key-column inference, and repeated-formula templates (`=D4*E4` repeated 30× ⇒ “Revenue is computed”). Regions get **stable ids** (`rg_…`, a hash of sheet + range) so separate calls can refer to the same table, plus a confidence score.
+**Regions.** Detected — not declared — via occupancy flood-fill plus heuristics: blank-row boundaries, header rows (string coverage, type discontinuity with the row below, bold), **two-row grouped headers** (`Amounts · Billed`), attached titles, totals rows, **interleaved subtotal rows and grouped sections** (excluded from statistics — no double counting), **notes blocks** attached to the tables they annotate, per-column type/statistics/role profiling, key-column inference, business **purpose tags**, and repeated-formula templates (`=D4*E4` repeated 30× ⇒ “Revenue is computed”). Regions get **stable ids** (`rg_…`, a hash of sheet + range) so separate calls can refer to the same table, plus a confidence score.
 
 **Diffusion.** `expandContext` runs a weighted frontier search from the seed: the seed's region first, then regions linked by formulas, names, headers, adjacency. Expansion stops on depth, weight decay, region cap, or token budget — whichever bites first. Deeper regions are summarised at coarser granularity.
 

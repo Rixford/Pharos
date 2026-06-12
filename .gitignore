@@ -5,3 +5,4 @@ coverage/
 test/fixtures/*.xlsx
 .DS_Store
 npm-debug.log*
+bench/out/

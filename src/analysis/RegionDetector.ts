@@ -22,11 +22,13 @@ import { GridCell, SheetGrid } from '../core/grid';
 import {
   CellValueType,
   ColumnProfile,
+  ColumnRole,
   JsonScalar,
   NumericStats,
   RangeRef,
   RegionData,
-  RegionKind
+  RegionKind,
+  RegionSection
 } from '../core/types';
 import { fmtDate, hash36 } from '../core/util';
 import { canonicalizeFormula, extractRefs } from '../parser/FormulaParser';
@@ -216,8 +218,85 @@ export function detectRegions(grid: SheetGrid): RegionData[] {
     regions.push(analyse(grid, comp, titles.get(comp), totals.get(comp), cellAt, storedCellsIn));
   }
   regions.sort((a, b) => a.range.startRow - b.range.startRow || a.range.startCol - b.range.startCol);
+
+  // 5. Attach notes blocks to the nearest table above them.
+  for (const note of regions.filter((r) => r.kind === 'notes')) {
+    const host = regions
+      .filter(
+        (r) =>
+          r.kind !== 'notes' &&
+          r.range.endRow < note.range.startRow &&
+          note.range.startRow - r.range.endRow <= 4 &&
+          r.range.startCol <= note.range.endCol &&
+          note.range.startCol <= r.range.endCol
+      )
+      .sort((a, b) => b.range.endRow - a.range.endRow)[0];
+    if (host && note.columns.length > 0) {
+      const lines: string[] = [];
+      for (let rr = note.range.startRow; rr <= note.range.endRow; rr++) {
+        for (let cc = note.range.startCol; cc <= note.range.endCol; cc++) {
+          const cell = grid.cells.get(cellKey(rr, cc));
+          if (cell && typeof cell.value === 'string') lines.push(cell.value);
+        }
+      }
+      if (lines.length > 0) host.notes = [...(host.notes ?? []), ...lines];
+    }
+  }
   return regions;
 }
+
+const PURPOSE_RULES: [RegExp, string][] = [
+  [/executive|kpi|key figures/i, 'summary / KPIs'],
+  [/payment|receipt|collect|remittance/i, 'payments / cash receipts'],
+  [/invoice/i, 'invoice register'],
+  [/credit|adjustment/i, 'credits & adjustments'],
+  [/aging|ageing|overdue/i, 'receivables aging'],
+  [/deferred|recognition/i, 'deferred revenue'],
+  [/contract/i, 'customer contracts'],
+  [/assumption|policy|basis/i, 'assumptions & policies'],
+  [/payroll|salar|wage|headcount|compensation/i, 'payroll'],
+  [/vendor|supplier/i, 'vendor spend'],
+  [/capex|capital/i, 'capital expenditure'],
+  [/alloc/i, 'cost allocations'],
+  [/forecast|projection/i, 'forecast'],
+  [/cost\s*cent/i, 'cost-center spend'],
+  [/department|dept/i, 'department spend'],
+  [/map|rate/i, 'reference mapping']
+];
+
+function inferPurpose(hay: string, monthHeaders: number, kind: RegionKind): string | undefined {
+  for (const [re, label] of PURPOSE_RULES) {
+    if (re.test(hay)) return monthHeaders >= 3 ? `${label} (by month)` : label;
+  }
+  if (kind === 'notes') return 'notes';
+  return undefined;
+}
+
+function inferRole(p: {
+  header?: string;
+  type: CellValueType | 'mixed';
+  distinct: number;
+  nonEmpty: number;
+  isKey?: boolean;
+  formulaTemplate?: string;
+  monthish: number;
+}): ColumnRole | undefined {
+  if (p.nonEmpty === 0) return undefined;
+  if (p.isKey) return 'key';
+  if (p.formulaTemplate) return 'computed';
+  if (p.type === 'date') return 'date';
+  if (p.monthish / p.nonEmpty >= 0.6) return 'month';
+  if (p.type === 'number') return 'measure';
+  if (p.type === 'string' || p.type === 'mixed') {
+    if (p.header && (/(^|\s)(id|code|ref)\b|\bid$/i.test(p.header)) && p.distinct === p.nonEmpty) return 'id';
+    if (p.distinct <= Math.max(12, Math.ceil(p.nonEmpty / 3))) return 'category';
+    return 'text';
+  }
+  return undefined;
+}
+
+const cleanSectionLabel = (label: string): string =>
+  label.replace(/\s*[—–-]*\s*(grand\s*)?(sub)?\s*totals?\s*$/i, '').trim() || label.trim();
 
 function analyse(
   grid: SheetGrid,
@@ -235,72 +314,88 @@ function analyse(
   const colCount = right - left + 1;
   const boxRows = comp.bottom - comp.top + 1;
 
-  // Header detection on the first row of the main block.
-  const headerCells: (GridCell | undefined)[] = [];
-  for (let c = left; c <= right; c++) headerCells.push(cellAt(top, c));
-  const presentHeader = headerCells.filter((c): c is GridCell => c !== undefined);
-  const headerStrings = presentHeader.filter((c) => c.type === 'string');
-  const headerDistinct =
-    new Set(headerStrings.map((c) => String(c.value).trim().toLowerCase())).size === headerStrings.length;
-
-  let nextRow = -1;
-  for (let r = top + 1; r <= comp.bottom; r++) {
-    let any = false;
+  const presentRow = (r: number): GridCell[] => {
+    const out: GridCell[] = [];
     for (let c = left; c <= right; c++) {
-      if (cellAt(r, c)) {
-        any = true;
-        break;
-      }
+      const cell = cellAt(r, c);
+      if (cell) out.push(cell);
     }
-    if (any) {
-      nextRow = r;
-      break;
+    return out;
+  };
+  const nextNonEmptyRow = (after: number): number => {
+    for (let r = after + 1; r <= comp.bottom; r++) {
+      if (presentRow(r).length > 0) return r;
+    }
+    return -1;
+  };
+
+  /** Header test: string coverage + distinctness + type discontinuity/bold vs the row below. */
+  const testHeader = (hr: number): boolean => {
+    if (colCount < 2 || hr >= comp.bottom) return false;
+    const cells = presentRow(hr);
+    if (cells.length === 0 || cells.length / colCount < 0.6) return false;
+    const strings = cells.filter((c) => c.type === 'string');
+    if (strings.length / cells.length < 0.8) return false;
+    const distinct = new Set(strings.map((c) => String(c.value).trim().toLowerCase())).size === strings.length;
+    if (!distinct) return false;
+    const nr = nextNonEmptyRow(hr);
+    if (nr < 0) return false;
+    const below = presentRow(nr);
+    if (below.length === 0) return false;
+    const belowNonString = below.filter((c) => c.type !== 'string').length / below.length;
+    const headerAllBold = cells.every((c) => c.style?.bold);
+    const belowAllBold = below.every((c) => c.style?.bold);
+    return belowNonString >= 0.4 || (headerAllBold && !belowAllBold);
+  };
+
+  // ── header detection: single row, then two-row grouped headers ───────────
+  let isHeader = testHeader(top);
+  let headerRowIdx = isHeader ? top : undefined;
+  let headerRows: number[] | undefined = isHeader ? [top] : undefined;
+  let groupRow: number | undefined;
+  if (!isHeader && boxRows >= 3) {
+    const topRow = presentRow(top);
+    const topAllStrings = topRow.length > 0 && topRow.every((c) => c.type === 'string');
+    const hasTopMerge = grid.merges.some(
+      (mg) =>
+        mg.startRow === top &&
+        mg.endRow === top &&
+        mg.endCol > mg.startCol &&
+        mg.startCol >= left &&
+        mg.endCol <= right
+    );
+    if (topAllStrings && hasTopMerge && testHeader(top + 1)) {
+      isHeader = true;
+      headerRowIdx = top + 1;
+      headerRows = [top, top + 1];
+      groupRow = top;
     }
   }
-  let belowNonString = 0;
-  let belowAllBold = true;
-  if (nextRow > 0) {
-    const below: GridCell[] = [];
-    for (let c = left; c <= right; c++) {
-      const cell = cellAt(nextRow, c);
-      if (cell) below.push(cell);
-    }
-    if (below.length > 0) {
-      belowNonString = below.filter((c) => c.type !== 'string').length / below.length;
-      belowAllBold = below.every((c) => c.style?.bold);
-    }
-  }
-  const headerAllBold = presentHeader.length > 0 && presentHeader.every((c) => c.style?.bold);
-  const boldSignal = headerAllBold && !belowAllBold;
-
-  const isHeader =
-    colCount >= 2 &&
-    boxRows >= 2 &&
-    presentHeader.length / colCount >= 0.6 &&
-    presentHeader.length > 0 &&
-    headerStrings.length / presentHeader.length >= 0.8 &&
-    headerDistinct &&
-    (belowNonString >= 0.4 || boldSignal);
 
   const headers = isHeader
     ? Array.from({ length: colCount }, (_, i) => {
-        const cell = cellAt(top, left + i);
-        const text = cell ? String(cell.value ?? '').trim() : '';
-        return text || colToLetter(left + i);
+        const col = left + i;
+        const sub = cellAt(headerRowIdx!, col);
+        const subText = sub ? String(sub.value ?? '').trim() : '';
+        let text = subText || colToLetter(col);
+        if (groupRow !== undefined) {
+          const group = cellAt(groupRow, col);
+          const groupText = group ? String(group.value ?? '').trim() : '';
+          if (groupText && groupText.toLowerCase() !== subText.toLowerCase()) {
+            text = `${groupText} · ${text}`;
+          }
+        }
+        return text;
       })
     : undefined;
 
-  const dataStartRow = top + (isHeader ? 1 : 0);
+  const dataStartRow = isHeader ? headerRowIdx! + 1 : top;
   let dataEndRow = comp.bottom;
   let totalsRow = totalsComp?.top;
 
   // Internal totals row (contiguous with the data, no blank gap).
   if (totalsRow === undefined && boxRows >= 3 && dataEndRow > dataStartRow) {
-    const lastCells: GridCell[] = [];
-    for (let c = left; c <= right; c++) {
-      const cell = cellAt(dataEndRow, c);
-      if (cell) lastCells.push(cell);
-    }
+    const lastCells = presentRow(dataEndRow);
     const labelCell = lastCells.find((c) => typeof c.value === 'string');
     const labelSaysTotal = labelCell !== undefined && /^\s*(grand\s+)?(sub)?total/i.test(String(labelCell.value));
     const sumsColumn = lastCells.some((cell) => {
@@ -320,15 +415,70 @@ function analyse(
     }
   }
 
-  const dataRowCount = Math.max(0, dataEndRow - dataStartRow + 1);
+  // ── subtotal rows + grouped sections (zoom level 3) ─────────────────────
+  const subtotalRows: number[] = [];
+  const subtotalKind = new Map<number, 'subtotal' | 'grandTotal'>();
+  if (dataEndRow - dataStartRow >= 2) {
+    for (let r = dataStartRow; r <= dataEndRow; r++) {
+      const cells = presentRow(r);
+      const label = cells.find((c) => typeof c.value === 'string' && String(c.value).trim() !== '');
+      const labelText = label ? String(label.value) : '';
+      // The label must END at "total/subtotal" — a sentence like "Vendor
+      // totals include capex…" in an assumptions list is NOT a subtotal row.
+      const labelSub = /(^|\s|—|–|-)(grand\s*)?(sub)?totals?\s*$/i.test(labelText.trim());
+      let formulaSub = false;
+      if (!labelSub) {
+        formulaSub = cells.some((cell) => {
+          if (!cell.formula || !/^(SUM|SUBTOTAL)\(/i.test(cell.formula)) return false;
+          const { refs } = extractRefs(cell.formula, sheet);
+          return refs.some(
+            (ref) =>
+              ref.range !== undefined &&
+              ref.range.startCol === cell.col &&
+              ref.range.endCol === cell.col &&
+              ref.range.endRow === r - 1 &&
+              ref.range.startRow >= dataStartRow &&
+              ref.range.endRow - ref.range.startRow >= 1
+          );
+        });
+      }
+      if (labelSub || formulaSub) {
+        subtotalRows.push(r);
+        subtotalKind.set(r, /grand/i.test(labelText) ? 'grandTotal' : 'subtotal');
+      }
+    }
+  }
+  const subtotalSet = new Set(subtotalRows);
 
-  // Column profiles.
+  const sections: RegionSection[] = [];
+  if (subtotalRows.length > 0) {
+    let groupStart = dataStartRow;
+    for (const sr of subtotalRows) {
+      const kind = subtotalKind.get(sr)!;
+      const labelCell = presentRow(sr).find((c) => typeof c.value === 'string' && String(c.value).trim() !== '');
+      const label = labelCell ? cleanSectionLabel(String(labelCell.value)) : undefined;
+      if (kind === 'grandTotal') {
+        sections.push({ kind: 'grandTotal', label, startRow: sr, endRow: sr, subtotalRow: sr });
+      } else if (sr > groupStart) {
+        sections.push({ kind: 'group', label, startRow: groupStart, endRow: sr - 1, subtotalRow: sr });
+      } else {
+        sections.push({ kind: 'subtotal', label, startRow: sr, endRow: sr, subtotalRow: sr });
+      }
+      groupStart = sr + 1;
+    }
+    if (groupStart <= dataEndRow) {
+      sections.push({ kind: 'group', startRow: groupStart, endRow: dataEndRow });
+    }
+  }
+
+  // ── column profiles (subtotal rows excluded from all statistics) ────────
   const columns: ColumnProfile[] = [];
   for (let c = left; c <= right; c++) {
     const typeCounts = new Map<CellValueType, number>();
     const distinct = new Set<string>();
     const samples: JsonScalar[] = [];
     let nonEmpty = 0;
+    let monthish = 0;
     let stats: NumericStats | undefined;
     let dateMin: Date | undefined;
     let dateMax: Date | undefined;
@@ -336,18 +486,18 @@ function analyse(
     let formulaCount = 0;
 
     for (let r = dataStartRow; r <= dataEndRow; r++) {
+      if (subtotalSet.has(r)) continue;
       const cell = grid.cells.get(cellKey(r, c));
       if (!cell) continue;
       nonEmpty++;
       typeCounts.set(cell.type, (typeCounts.get(cell.type) ?? 0) + 1);
       const jv = jsonValue(cell);
       const sv = String(jv);
+      if (typeof jv === 'string' && /^\d{4}-\d{2}$/.test(jv.trim())) monthish++;
       if (distinct.size < 10000) distinct.add(sv);
-      if (samples.length < 3 && !samples.some((s) => String(s) === sv)) samples.push(jv);
+      if (samples.length < 3 && !samples.some((x) => String(x) === sv)) samples.push(jv);
       if (cell.type === 'number' && typeof cell.value === 'number') {
-        if (!stats) {
-          stats = { sum: 0, min: Infinity, max: -Infinity, mean: 0 };
-        }
+        if (!stats) stats = { sum: 0, min: Infinity, max: -Infinity, mean: 0 };
         stats.sum += cell.value;
         if (cell.value < stats.min) {
           stats.min = cell.value;
@@ -373,6 +523,7 @@ function analyse(
 
     if (stats) {
       const numberCount = typeCounts.get('number') ?? 0;
+      stats.sum = Math.round(stats.sum * 10000) / 10000;
       stats.mean = numberCount > 0 ? stats.sum / numberCount : 0;
     }
 
@@ -389,14 +540,14 @@ function analyse(
     let formulaTemplate: string | undefined;
     let formulaExample: string | undefined;
     if (formulaCount >= 2) {
-      const top = [...templates.entries()].sort((a, b) => b[1].count - a[1].count)[0];
-      if (top[1].count / formulaCount >= 0.6) {
-        formulaTemplate = top[0];
-        formulaExample = `=${top[1].example}`;
+      const topT = [...templates.entries()].sort((a, b) => b[1].count - a[1].count)[0];
+      if (topT[1].count / formulaCount >= 0.6) {
+        formulaTemplate = topT[0];
+        formulaExample = `=${topT[1].example}`;
       }
     }
 
-    columns.push({
+    const profile: ColumnProfile = {
       col: c,
       letter: colToLetter(c),
       header: headers?.[c - left],
@@ -407,34 +558,41 @@ function analyse(
       formulaTemplate,
       formulaExample,
       samples,
-      dateRange:
-        dateMin && dateMax ? { min: fmtDate(dateMin), max: fmtDate(dateMax) } : undefined
-    });
+      dateRange: dateMin && dateMax ? { min: fmtDate(dateMin), max: fmtDate(dateMax) } : undefined
+    };
+    profile.role = inferRole({ ...profile, monthish });
+    columns.push(profile);
   }
 
-  // Key column: leftmost fully-populated, all-distinct column.
+  const dataRowCount = Math.max(0, dataEndRow - dataStartRow + 1 - subtotalRows.length);
+
   for (const profile of columns) {
     if (
       dataRowCount >= 2 &&
       profile.nonEmpty === dataRowCount &&
       profile.distinct === profile.nonEmpty &&
-      profile.type !== 'empty'
+      profile.type !== 'empty' &&
+      profile.type !== 'number'
     ) {
       profile.isKey = true;
+      profile.role = 'key';
       break;
     }
   }
 
-  // Kind classification.
+  // ── kind classification ──────────────────────────────────────────────────
+  const stored = storedCellsIn({ top, bottom, left, right });
   let kind: RegionKind;
-  if (colCount === 1) kind = 'list';
-  else if (isHeader) kind = 'table';
-  else if (
-    colCount === 2 &&
-    columns[0].type === 'string' &&
-    columns[1].nonEmpty > 0 &&
-    columns[1].type !== 'string'
-  ) {
+  const allStrings = stored.length > 0 && stored.every((c) => c.type === 'string' && !c.formula);
+  const avgLen = allStrings ? stored.reduce((s, c) => s + String(c.value).length, 0) / stored.length : 0;
+  const allItalic = allStrings && stored.every((c) => c.style?.italic);
+  if (!isHeader && allStrings && colCount <= 2 && bottom - top + 1 <= 4 && (avgLen >= 35 || allItalic)) {
+    kind = 'notes';
+  } else if (colCount === 1) {
+    kind = 'list';
+  } else if (isHeader) {
+    kind = 'table';
+  } else if (colCount === 2 && columns[0].type === 'string' && columns[1].nonEmpty > 0 && columns[1].type !== 'string') {
     kind = 'keyValue';
   } else if (colCount >= 2 && boxRows >= 2) {
     let firstColStrings = 0;
@@ -468,28 +626,25 @@ function analyse(
     kind = 'block';
   }
 
-  // Title.
+  // ── title ────────────────────────────────────────────────────────────────
   let title: string | undefined;
   let titleRange: string | undefined;
   if (titleComp) {
     const titleCells = storedCellsIn(titleComp).sort((a, b) => a.col - b.col);
     title = titleCells
       .map((c) => String(c.value ?? '').trim())
-      .filter((s) => s.length > 0)
+      .filter((x) => x.length > 0)
       .join(' ');
-    titleRange = formatRange(
-      {
-        sheet,
-        startRow: titleComp.top,
-        endRow: titleComp.bottom,
-        startCol: titleComp.left,
-        endCol: titleComp.right
-      }
-    );
+    titleRange = formatRange({
+      sheet,
+      startRow: titleComp.top,
+      endRow: titleComp.bottom,
+      startCol: titleComp.left,
+      endCol: titleComp.right
+    });
   }
 
   const range: RangeRef = { sheet, startRow: top, endRow: bottom, startCol: left, endCol: right };
-  const stored = storedCellsIn({ top, bottom, left, right });
   const cellCount = stored.length;
   const formulaCellCount = stored.filter((c) => c.formula).length;
   const density = cellCount / ((bottom - top + 1) * colCount);
@@ -497,8 +652,7 @@ function analyse(
   let typeConsistency = 0;
   const dataCols = columns.filter((c) => c.nonEmpty > 0);
   if (dataCols.length > 0) {
-    typeConsistency =
-      dataCols.reduce((acc, c) => acc + (c.type === 'mixed' ? 0.4 : 1), 0) / dataCols.length;
+    typeConsistency = dataCols.reduce((acc, c) => acc + (c.type === 'mixed' ? 0.4 : 1), 0) / dataCols.length;
   }
 
   let confidence =
@@ -508,9 +662,24 @@ function analyse(
     (dataRowCount >= 3 ? 0.1 : 0) +
     0.2 * typeConsistency +
     (title ? 0.05 : 0) +
-    (kind !== 'block' ? 0.05 : 0);
+    (kind !== 'block' ? 0.05 : 0) +
+    (sections.length > 0 ? 0.05 : 0);
   if (cellCount === 1) confidence -= 0.35;
   confidence = Math.round(Math.max(0.05, Math.min(0.99, confidence)) * 100) / 100;
+
+  const monthHeaders = (headers ?? []).filter((h) => /^\d{4}-\d{2}$/.test(h)).length;
+  const kvSamples =
+    kind === 'keyValue' || kind === 'notes' || kind === 'list'
+      ? columns[0]?.samples.map((x) => String(x)).join(' ') ?? ''
+      : '';
+  const purpose =
+    kind === 'notes'
+      ? 'notes'
+      : inferPurpose(
+          `${sheet} ${title ?? ''} ${(headers ?? []).join(' ')} ${kvSamples}`.toLowerCase(),
+          monthHeaders,
+          kind
+        );
 
   const rangeA1 = formatRange(range);
   return {
@@ -521,7 +690,7 @@ function analyse(
     kind,
     title: title || undefined,
     titleRange,
-    headerRow: isHeader ? top : undefined,
+    headerRow: headerRowIdx,
     headers,
     columns,
     rowCount: bottom - top + 1,
@@ -534,6 +703,10 @@ function analyse(
     density: Math.round(density * 100) / 100,
     cellCount,
     formulaCellCount,
-    confidence
+    confidence,
+    headerRows,
+    subtotalRows: subtotalRows.length > 0 ? subtotalRows : undefined,
+    sections: sections.length > 0 ? sections : undefined,
+    purpose
   };
 }

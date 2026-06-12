@@ -101,6 +101,8 @@ export interface DiffusionOptions {
   weights?: Partial<EdgeWeights>;
   /** Include a precedent/dependent trace excerpt for formula seeds (default true). */
   includeTrace?: boolean;
+  /** Natural-language question used to boost semantically relevant regions. */
+  question?: string;
 }
 
 export interface ResolvedDiffusionOptions {
@@ -112,6 +114,7 @@ export interface ResolvedDiffusionOptions {
   decay: number;
   weights: EdgeWeights;
   includeTrace: boolean;
+  question?: string;
 }
 
 export interface NumericStats {
@@ -124,6 +127,9 @@ export interface NumericStats {
   /** Address of the cell holding the min value (evidence). */
   minAt?: string;
 }
+
+/** Inferred business role of a column (deterministic heuristics). */
+export type ColumnRole = 'key' | 'id' | 'category' | 'measure' | 'date' | 'month' | 'computed' | 'text';
 
 export interface ColumnProfile {
   /** 1-based column index in the sheet. */
@@ -142,9 +148,23 @@ export interface ColumnProfile {
   samples: JsonScalar[];
   /** Min/max for date-typed columns (ISO strings). */
   dateRange?: { min: string; max: string };
+  /** Inferred business role (key/id/category/measure/date/month/computed/text). */
+  role?: ColumnRole;
 }
 
-export type RegionKind = 'table' | 'matrix' | 'keyValue' | 'list' | 'block';
+export type RegionKind = 'table' | 'matrix' | 'keyValue' | 'list' | 'block' | 'notes';
+
+/** A grouped block inside a region (zoom level 3). */
+export interface RegionSection {
+  kind: 'group' | 'subtotal' | 'grandTotal';
+  /** Cleaned label, e.g. 'Acme Industrial' for 'Acme Industrial — Subtotal'. */
+  label?: string;
+  /** First/last data row of the grouped block (for kind 'group'). */
+  startRow: number;
+  endRow: number;
+  /** The subtotal row that closes the group, when present. */
+  subtotalRow?: number;
+}
 
 export interface RegionData {
   /** Stable identifier derived from sheet + range (same workbook ⇒ same id). */
@@ -174,6 +194,16 @@ export interface RegionData {
   formulaCellCount: number;
   /** Heuristic confidence 0..1 that this is a meaningful region. */
   confidence: number;
+  /** All header rows (two entries for grouped/multi-row headers). */
+  headerRows?: number[];
+  /** Subtotal/grand-total rows inside the data span (excluded from stats). */
+  subtotalRows?: number[];
+  /** Grouped blocks + subtotal structure inside the region (zoom level 3). */
+  sections?: RegionSection[];
+  /** Note lines attached from an adjacent notes block. */
+  notes?: string[];
+  /** Deterministic business-purpose tag, e.g. 'payments / cash receipts'. */
+  purpose?: string;
 }
 
 export interface RegionSummary {

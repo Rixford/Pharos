@@ -41,7 +41,8 @@ const KIND_LABEL: Record<RegionKind, string> = {
   matrix: 'Matrix',
   keyValue: 'Key/value block',
   list: 'List',
-  block: 'Block'
+  block: 'Block',
+  notes: 'Notes'
 };
 
 function jsonValue(cell: GridCell): JsonScalar {
@@ -112,6 +113,21 @@ export function summariseRegion(
   const dateCol = r.columns.find((c) => c.dateRange);
   if (dateCol?.dateRange) {
     parts.push(`${colName(dateCol)} spans ${dateCol.dateRange.min} → ${dateCol.dateRange.max}`);
+  }
+
+  if (r.purpose) parts.splice(1, 0, `purpose: ${r.purpose}`);
+  if (r.headerRows && r.headerRows.length > 1) parts.push('2-row grouped header');
+  const groupSections = (r.sections ?? []).filter((s) => s.kind === 'group');
+  if (groupSections.length > 0) {
+    parts.push(
+      `${groupSections.length} grouped section(s)` +
+        ((r.subtotalRows?.length ?? 0) > 0
+          ? ` — subtotal rows ${r.subtotalRows!.slice(0, 8).join(', ')} excluded from stats`
+          : '')
+    );
+  }
+  if (r.notes && r.notes.length > 0) {
+    parts.push(`note: ${r.notes[0].slice(0, 120)}${r.notes.length > 1 ? ` (+${r.notes.length - 1} more)` : ''}`);
   }
 
   const totalsPairs: string[] = [];

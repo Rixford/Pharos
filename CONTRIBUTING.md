@@ -24,6 +24,7 @@ Node ≥ 18 required.
 | `npm test` | pretest = build + fixtures, then Jest (unit + integration) |
 | `npm run lint` | eslint over `src`, `test`, `scripts` |
 | `npm run typecheck` | tsc --noEmit over everything |
+| `npm run bench -- 42 7 1337` | closed-loop liquidity benchmark (bench/REPORT.md) |
 
 The fixture workbook is generated, never committed — edit
 `scripts/make-fixtures.ts` if a test needs new shapes (hidden sheets,
